@@ -174,8 +174,8 @@ class ViCLIPGlobalInstance:
             config.model.vision_encoder.num_frames = 8
             config.num_frames = 8
             config.num_frames_test = 8
-            # # >> can be configured in case the bert model doesn't load
-            # config.model.text_encoder.pretrained = str(MODELS_ROOT_PATH / 'bert-large-uncased')
+            # >> can be configured in case the bert model doesn't load
+            config.model.text_encoder.pretrained = str(MODELS_ROOT_PATH / 'bert-large-uncased')
             config.model.text_encoder.config = str(INTERNVIDEO_PATH / 'InternVideo2/multi_modality') + "/" + config.model.text_encoder.config
             model_pth = str(MODELS_ROOT_PATH / 'InternVideo2-stage2_1b-224p-f4.pt')
             config.pretrained_path = model_pth

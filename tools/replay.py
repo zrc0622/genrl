@@ -196,6 +196,10 @@ class ReplayBuffer(IterableDataset):
     if not episode:
       return False
     length = eplen(episode)
+
+    if length < self._minlen:
+        return False
+   
     if run_checks:
       for k in episode:
         assert len(episode[k]) == length, f'Found {episode[k].shape} VS eplen: {length}'

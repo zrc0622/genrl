@@ -366,6 +366,26 @@ class OneHotAction(gym.Wrapper):
         reference[index] = 1.0
         return reference
 
+class LIBERO:
+    def __init__(self, name, seed=0, action_repeat=1, size=(128, 128)):
+        self._size = size
+        self._action_repeat = action_repeat
+
+    @property
+    def obs_space(self):
+        return {
+            'observation': gym.spaces.Box(0, 255, (3,) + self._size, dtype=np.uint8),
+            'is_first': gym.spaces.Box(0, 1, (), dtype=bool),
+            'is_last': gym.spaces.Box(0, 1, (), dtype=bool),
+            'is_terminal': gym.spaces.Box(0, 1, (), dtype=bool),
+        }
+
+    @property
+    def act_space(self):
+        return {
+            'action': gym.spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype=np.float32)
+        }
+
 class KitchenWrapper:
     def __init__(
         self,
@@ -714,6 +734,8 @@ def make(name, obs_type, action_repeat, seed, img_size=64, viclip_encode=False, 
     domain, task = name.split('_', 1)
     if domain == 'kitchen':
         env = TimeLimit(KitchenWrapper(task, seed=seed, action_repeat=action_repeat, size=(img_size,img_size)), 280 // action_repeat)
+    elif domain in ['libero', 'bridge']:
+        env = LIBERO(task, seed=seed, action_repeat=action_repeat, size=(img_size,img_size))
     else:
         os.environ['PYOPENGL_PLATFORM'] = 'egl' 
         os.environ['MUJOCO_GL'] = 'egl'

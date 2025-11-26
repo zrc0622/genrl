@@ -99,10 +99,11 @@ class Workspace:
                     episode = load_episode(fname)
 
                     # validate before continuing
-                    if type(episode[self.key_to_add]) == np.ndarray and episode[self.key_to_add].size > 1 and episode[self.key_to_add].shape[0] == episode[self.key_to_process].shape[0]:
-                        continue
-                    else:
-                        del episode[self.key_to_add]
+                    if self.key_to_add in episode:
+                        if type(episode[self.key_to_add]) == np.ndarray and episode[self.key_to_add].size > 1 and episode[self.key_to_add].shape[0] == episode[self.key_to_process].shape[0]:
+                            continue
+                        else:
+                            del episode[self.key_to_add]
 
                     add_data = self.train_env.process_episode(episode[self.key_to_process]) # .cpu().numpy()
                     if idx == 0:
