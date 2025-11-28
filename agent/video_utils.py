@@ -65,7 +65,7 @@ class VideoSSM(common.EnsembleRSSM):
     def __init__(self, *args, 
                  connector_kl={}, temporal_embeds=False, detached_post=True, n_frames=8, 
                  token_dropout=0.,  loss_scale=1, clip_add_noise=0, clip_lafite_noise=0,
-                 rescale_embeds=False, denoising_ae=False, learn_initial=True, **kwargs,):
+                 rescale_embeds=False, denoising_ae=False, learn_initial=True, use_obs_model=False, **kwargs,):
         super().__init__(*args, **kwargs)
         #
         self.n_frames = n_frames
@@ -94,8 +94,9 @@ class VideoSSM(common.EnsembleRSSM):
                 nn.Linear(kwargs['hidden'], kwargs['deter'])
             )
         # Deleting non-useful models
-        del self._obs_out
-        del self._obs_dist
+        if not use_obs_model:
+            del self._obs_out
+            del self._obs_dist
 
     def initial(self, batch_size, init_embed=None, ignore_learned=False):
         init = super().initial(batch_size)

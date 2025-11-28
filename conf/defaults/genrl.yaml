@@ -8,7 +8,7 @@ reward_head: {layers: 4, units: 1024, norm: layer, dist: twohot} # act: elu
 kl: { free: 1.0, forward: False, balance: 0.85, free_avg: False, }
 loss_scales: {kl: 0.6, reward: 1.0, discount: 1.0, proprio: 1.0}
 model_opt: {opt: adam, lr: 1e-4, eps: 1e-8, clip: 1000, wd: 1e-6}
-replay: {capacity: 20e6, ongoing: False, minlen: 48, maxlen: 48, prioritize_ends: False}
+replay: {domain: [], capacity: 20e6, ongoing: False, minlen: 48, maxlen: 48, prioritize_ends: False}
 decoder_inputs: stoch
 image_dist: mse
 # Actor Critic

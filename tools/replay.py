@@ -36,7 +36,7 @@ def on_fn(): return collections.defaultdict(list) # this function is to avoid la
 class ReplayBuffer(IterableDataset):
 
   def __init__(
-      self, data_specs, meta_specs, directory, length=20, capacity=0, ongoing=False, minlen=1, maxlen=0,
+      self, data_specs, meta_specs, directory, length=20, domain=None, capacity=0, ongoing=False, minlen=1, maxlen=0,
       prioritize_ends=False, device='cuda', load_first=False, save_episodes=True, ignore_extra_keys=False, load_recursive=False, min_t_sampling=0, **kwargs):
     self._directory = pathlib.Path(directory).expanduser()
     self._directory.mkdir(parents=True, exist_ok=True)
@@ -47,6 +47,11 @@ class ReplayBuffer(IterableDataset):
     self._prioritize_ends = prioritize_ends
     self._ignore_extra_keys = ignore_extra_keys
     self._min_t_sampling = min_t_sampling
+    
+    self._allowed_domains = None
+    if domain is not None and len(domain) > 0:
+        self._allowed_domains = domain
+
     # self._random = np.random.RandomState()
     # filename -> key -> value_sequence
     
@@ -55,6 +60,10 @@ class ReplayBuffer(IterableDataset):
 
     self._episode_lens = np.array([])
     self._complete_eps = {} 
+    self._episode_paths = [] 
+    
+    self._logged_missing_keys = set()
+
     self._data_specs = data_specs
     self._meta_specs = meta_specs    
     for spec_group in [data_specs, meta_specs]: 
@@ -70,10 +79,12 @@ class ReplayBuffer(IterableDataset):
       directory = Path(directory)
     self._loaded_episodes = 0 
     self._loaded_steps = 0 
-    for f in tqdm(load_filenames(self._directory, capacity, minlen, load_first=load_first, load_recursive=load_recursive)):
+
+    for f in tqdm(load_filenames(self._directory, capacity, minlen, load_first=load_first, 
+                                 load_recursive=load_recursive, allowed_domains=self._allowed_domains)):
       self.store_episode(filename=f)
     try:
-      self._total_episodes, self._total_steps = count_episodes(directory)
+      self._total_episodes, self._total_steps = count_episodes(directory, allowed_domains=self._allowed_domains)
     except:
       print("Couldn't count episodes")
       print("Loaded episodes: ", self._loaded_episodes)
@@ -178,11 +189,53 @@ class ReplayBuffer(IterableDataset):
   def store_episode(self, filename=None, episode=None, run_checks=True):
     if filename is not None:
       episode = load_episode(filename)
-      if len(episode['reward'].shape) == 1:
-        episode['reward'] = episode['reward'].reshape(-1, 1)
+
+      try:
+          abs_path = pathlib.Path(filename).resolve()
+          root_path = self._directory.resolve()
+          rel_path = abs_path.relative_to(root_path)
+          domain = rel_path.parts[0] if len(rel_path.parts) > 1 else 'root'
+      except Exception:
+          domain = 'unknown_domain'
+
+      length = 0
+      for k in ['observation', 'image', 'action', 'is_first', 'reward']:
+          if k in episode:
+              length = len(episode[k])
+              break
+      if length == 0 and len(episode) > 0:
+          length = len(next(iter(episode.values())))
+
+      for spec in self._data_specs:
+          if type(spec) in [dict, Dict]:
+              for k, v in spec.items():
+                  if k not in episode:
+                      if (domain, k) not in self._logged_missing_keys:
+                          print(f"Warning: Key '{k}' missing in dataset '{domain}'. Filling with zeros.")
+                          self._logged_missing_keys.add((domain, k))
+                      
+                      shape = (length,) + v.shape
+                      episode[k] = np.zeros(shape, dtype=v.dtype)
+          else:
+              if spec.name not in episode:
+                  k = spec.name
+                  if (domain, k) not in self._logged_missing_keys:
+                      print(f"Warning: Key '{k}' missing in dataset '{domain}'. Filling with zeros.")
+                      self._logged_missing_keys.add((domain, k))
+
+                  shape = (length,) + spec.shape
+                  episode[k] = np.zeros(shape, dtype=spec.dtype)
+
+      if 'reward' in episode:
+          if len(episode['reward'].shape) == 1:
+            episode['reward'] = episode['reward'].reshape(-1, 1)
+
       if 'discount' not in episode:
-        episode['discount'] = (1 - episode['is_terminal']).reshape(-1, 1).astype(np.float32)
-      #
+        if 'is_terminal' in episode:
+            episode['discount'] = (1 - episode['is_terminal']).reshape(-1, 1).astype(np.float32)
+        else:
+            episode['discount'] = np.ones((length, 1), dtype=np.float32)
+      
       if run_checks:
         for spec_set in [self._data_specs, self._meta_specs]: 
           for spec in spec_set:
@@ -211,6 +264,7 @@ class ReplayBuffer(IterableDataset):
       removed_len, self._episode_lens = self._episode_lens[0], self._episode_lens[1:]
       self._loaded_steps -= removed_len
       self._loaded_episodes -= 1
+      if len(self._episode_paths) > 0: self._episode_paths.pop(0)
 
     # add episode
     for k,v in episode.items():
@@ -218,6 +272,12 @@ class ReplayBuffer(IterableDataset):
         if self._ignore_extra_keys: continue
         else: raise KeyError("Extra key ", k)
       self._complete_eps[k].append(v)
+
+    if filename is not None:
+      self._episode_paths.append(pathlib.Path(filename))
+    else:
+      self._episode_paths.append(None) 
+
     self._episode_lens = np.append(self._episode_lens, length)
     self._loaded_steps += length
     self._loaded_episodes += 1
@@ -253,6 +313,58 @@ class ReplayBuffer(IterableDataset):
         f2.write(f1.read())
     return filename
 
+  def sample_visual_batch(self, n_per_domain=2, batch_length=None):
+    if batch_length is None:
+      batch_length = self._length
+
+    domain_indices = collections.defaultdict(list)
+
+    root_dir = self._directory.resolve()
+
+    for idx, path in enumerate(self._episode_paths):
+      if path is not None:
+        try:
+            abs_path = path.resolve()
+            rel_path = abs_path.relative_to(root_dir)
+            domain = rel_path.parts[0]
+        except ValueError:
+            # Fallback if path is not relative to root
+            domain = path.parent.name
+        domain_indices[domain].append(idx)
+      else:
+        domain_indices['unknown'].append(idx)
+
+    selected_indices = []
+    
+    for domain, indices in domain_indices.items():
+      if len(indices) == 0: continue
+      replace = len(indices) < n_per_domain
+      chosen = np.random.choice(indices, size=n_per_domain, replace=replace)
+      selected_indices.extend(chosen)
+
+    if len(selected_indices) == 0:
+        # Fallback to random sampling if no domains found
+        b_indices = np.random.randint(0, self._loaded_episodes, size=n_per_domain) 
+    else:
+        b_indices = np.array(selected_indices)
+    
+    batch_size = len(b_indices)
+
+    t_indices = np.random.randint(
+      np.zeros(batch_size) + self._min_t_sampling, 
+      self._episode_lens[b_indices] - batch_length + 1, 
+      size=batch_size
+    )
+    t_ranges = np.repeat(np.expand_dims(np.arange(0, batch_length,), 0), batch_size, axis=0) + np.expand_dims(t_indices, 1)
+
+    chunk = {}
+    for k in self._complete_eps:
+      chunk[k] = np.stack([self._complete_eps[k][b][t] for b, t in zip(b_indices, t_ranges)])
+    for k in chunk: 
+      chunk[k] = torch.as_tensor(chunk[k], device=self.device)
+
+    return chunk
+
 def load_episode(filename):
   try:
     with filename.open('rb') as f:
@@ -263,8 +375,15 @@ def load_episode(filename):
     return False
   return episode
 
-def count_episodes(directory):
-  filenames = list(directory.glob('*.npz'))
+def count_episodes(directory, allowed_domains=None):
+  filenames = []
+  if allowed_domains is not None and len(allowed_domains) > 0:
+      for d in allowed_domains:
+          filenames.extend(list((directory / d).glob('*.npz')))
+          # Also checking recursive inside domain if needed, but keeping simple per original logic
+  else:
+      filenames = list(directory.glob('*.npz'))
+      
   num_episodes = len(filenames)
   if num_episodes == 0 : return 0, 0
   if len(filenames) > 0 and "-" in str(filenames[0]):
@@ -275,13 +394,26 @@ def count_episodes(directory):
     last_episode = sorted(list(int(n.stem.split('_')[0]) for n in filenames))[-1]
   return last_episode, num_steps
 
-def load_filenames(directory, capacity=None, minlen=1, load_first=False, load_recursive=False):
+def load_filenames(directory, capacity=None, minlen=1, load_first=False, load_recursive=False, allowed_domains=None):
   # The returned directory from filenames to episodes is guaranteed to be in
   # temporally sorted order.
-  if load_recursive:
-    filenames = sorted(directory.glob('**/*.npz'))
+  
+  filenames = []
+  if allowed_domains is not None and len(allowed_domains) > 0:
+      for d in allowed_domains:
+          d_path = directory / d
+          if load_recursive:
+              filenames.extend(d_path.glob('**/*.npz'))
+          else:
+              filenames.extend(d_path.glob('*.npz'))
   else:
-    filenames = sorted(directory.glob('*.npz'))
+      if load_recursive:
+        filenames = list(directory.glob('**/*.npz'))
+      else:
+        filenames = list(directory.glob('*.npz'))
+  
+  filenames = sorted(filenames)
+  
   if capacity:
     num_steps = 0
     num_episodes = 0

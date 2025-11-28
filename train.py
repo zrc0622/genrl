@@ -346,7 +346,12 @@ class Workspace:
                     self.logger.log_metrics(metrics, self.global_frame, ty='train')
                 if should_log_visual(self.global_step) and self.cfg.train_from_data and hasattr(self.agent, 'report'):
                     with torch.no_grad(), utils.eval_mode(self.agent):
-                        videos = self.agent.report(next(self.replay_iter))
+                        # videos = self.agent.report(next(self.replay_iter))
+                        vis_batch = self.replay_storage.sample_visual_batch(
+                            n_per_domain=2, 
+                            batch_length=self.cfg.batch_length
+                        )
+                        videos = self.agent.report(vis_batch)
                         self.logger.log_visual(videos, self.global_frame)
                 if should_log_scalars(self.global_step):
                     elapsed_time, total_time = self.timer.reset()

@@ -734,7 +734,7 @@ def make(name, obs_type, action_repeat, seed, img_size=64, viclip_encode=False, 
     domain, task = name.split('_', 1)
     if domain == 'kitchen':
         env = TimeLimit(KitchenWrapper(task, seed=seed, action_repeat=action_repeat, size=(img_size,img_size)), 280 // action_repeat)
-    elif domain in ['libero', 'bridge']:
+    elif domain in ['libero', 'bridge', 'video']:
         env = LIBERO(task, seed=seed, action_repeat=action_repeat, size=(img_size,img_size))
     else:
         os.environ['PYOPENGL_PLATFORM'] = 'egl' 
