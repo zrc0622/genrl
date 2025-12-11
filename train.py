@@ -136,7 +136,8 @@ class Workspace:
         else:
             snapshot_dir = None
 
-        if snapshot_dir is not None:        
+        if snapshot_dir is not None:
+            self.agent = sample_agent        
             self.load_snapshot(snapshot_dir, resume=False)
             if self.cfg.reset_world_model:
                 self.agent.wm = sample_agent.wm 
@@ -367,14 +368,21 @@ class Workspace:
 
             self._global_step += 1
             # == 1000 is to make sure everything is going well since the start
-            if (self.global_frame == 1000) or (self.global_frame % self.cfg.snapshot_every_frames == 0):
+            if self.global_frame % self.cfg.snapshot_every_frames == 0:
                 self.save_snapshot()
 
     @utils.retry
     def save_snapshot(self):
         snapshot = self.root_dir / f'snapshot_{self.global_frame}.pt'
-        keys_to_save = ['agent', '_global_step', '_global_episode']
+
+        state_dict = self.agent.state_dict()
+        for key in list(state_dict.keys()):
+            if 'wm.vae.' in key or 'wm.viclip_model.' in key or 'wm.encoder.depth_model.' in key: # freeze
+                del state_dict[key]
+
+        keys_to_save = ['_global_step', '_global_episode']
         payload = {k: self.__dict__[k] for k in keys_to_save}
+        payload['agent_state_dict'] = state_dict
         with snapshot.open('wb') as f:
             torch.save(payload, f)
 
@@ -392,13 +400,21 @@ class Workspace:
     @utils.retry
     def save_last_model(self):
         snapshot = self.root_dir / 'last_snapshot.pt'
-        if snapshot.is_file():
-            temp = Path(str(snapshot).replace("last_snapshot.pt", "second_last_snapshot.pt"))
-            os.replace(snapshot, temp)
-        keys_to_save = ['agent', '_global_step', '_global_episode']
+        # if snapshot.is_file():
+        #     temp = Path(str(snapshot).replace("last_snapshot.pt", "second_last_snapshot.pt"))
+        #     os.replace(snapshot, temp)
+        
+        state_dict = self.agent.state_dict()
+        for key in list(state_dict.keys()):
+            if 'wm.vae.' in key or 'wm.viclip_model.' in key or 'wm.encoder.depth_model.' in key: # freeze
+                del state_dict[key]
+
+        keys_to_save = ['_global_step', '_global_episode']
         if self.cfg.use_wandb: 
             keys_to_save.append('wandb_run_id')
         payload = {k: self.__dict__[k] for k in keys_to_save}
+        payload['agent_state_dict'] = state_dict
+
         with snapshot.open('wb') as f:
             torch.save(payload, f)
 
@@ -413,12 +429,19 @@ class Workspace:
             snapshot = Path(str(snapshot_dir).replace('last_snapshot', 'second_last_snapshot'))
             with snapshot.open('rb') as f:
                 payload = torch.load(f)
-        if type(payload) != dict:
-            self.agent = payload
-            self.agent.requires_grad_(requires_grad=False)
-            return
+        
+        if 'agent_state_dict' in payload:
+            missing, unexpected = self.agent.load_state_dict(payload['agent_state_dict'], strict=False)
+            print(f"Loaded state dict. Missing keys (expected for frozen models): {len(missing)}")
+        elif 'agent' in payload:
+            self.agent = payload['agent']
+            if hasattr(self.agent.wm, 'set_gradient_checkpointing'):
+                if self.cfg.agent.get('gradient_checkpointing', True):
+                    self.agent.wm.set_gradient_checkpointing(True)
+        
         for k,v in payload.items():
-            setattr(self, k, v)
+            if k not in ['agent', 'agent_state_dict']:
+                setattr(self, k, v)
             if k == 'wandb_run_id' and resume:
                 assert wandb.run is None
                 cfg = self.cfg

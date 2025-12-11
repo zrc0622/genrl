@@ -1,9 +1,9 @@
 import warnings
-
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 import io
 import os
+import shutil
 from tqdm import tqdm
 
 os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
@@ -22,27 +22,21 @@ torch.backends.cudnn.benchmark = True
 
 if os.name == "nt":
     import msvcrt
-
     def portable_lock(fp):
         fp.seek(0)
         msvcrt.locking(fp, msvcrt.LK_LOCK, 1)
-
     def portable_unlock(fp):
         fp.seek(0)
         msvcrt.locking(fp, msvcrt.LK_UNLCK, 1)
 else:
     import fcntl
-
     def portable_lock(fp):
         fcntl.flock(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
     def portable_unlock(fp):
         fcntl.flock(fp, fcntl.LOCK_UN)
 
-
 class Locker:
     def __init__(self, lock_name):
-        # e.g. lock_name = "./lockfile.lck"
         self.lock_name = lock_name 
 
     def __enter__(self,):
@@ -70,6 +64,11 @@ class Workspace:
 
         self.key_to_process = getattr(cfg, 'key_to_process', 'observation')
 
+        default_err_path = "./data/false"
+        self.error_dir = Path(getattr(cfg, 'error_dir', default_err_path))
+        self.error_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Error files will be moved to: {self.error_dir}")
+
         self.cfg = cfg
         self.device = torch.device(cfg.device)
 
@@ -92,6 +91,8 @@ class Workspace:
         print(f"Found {len(filenames)} files")
         episodes_to_process = {}
 
+        moved_count = 0
+
         for idx, fname in tqdm(enumerate(filenames)):
             lockname = str(fname.absolute()) + ".lck"
             try:
@@ -105,7 +106,22 @@ class Workspace:
                         else:
                             del episode[self.key_to_add]
 
-                    add_data = self.train_env.process_episode(episode[self.key_to_process]) # .cpu().numpy()
+                    try:
+                        add_data = self.train_env.process_episode(episode[self.key_to_process]) # .cpu().numpy()
+                    except ValueError as e:
+                        print(f"\n[Error] Failed to process {fname.name}: {e}")
+
+                        dest_path = self.error_dir / fname.name
+                        print(f"Moving to -> {dest_path}")
+                        
+                        try:
+                            shutil.move(str(fname), str(dest_path))
+                            moved_count += 1
+                        except Exception as move_e:
+                            print(f"Failed to move file: {move_e}")
+
+                        continue
+                    
                     if idx == 0:
                         print(add_data.shape)
                     episode[self.key_to_add] = add_data
@@ -116,9 +132,15 @@ class Workspace:
                         f1.seek(0)
                         with fname.open('wb') as f2:
                             f2.write(f1.read())
+            
             except BlockingIOError:
                 print(f"File busy: {str(fname)}")
                 continue
+            except Exception as e:
+                print(f"\n[Critical Error] processing {fname}: {e}")
+                continue
+        
+        print(f"Processing complete. Moved {moved_count} invalid files.")
 
 
 def start_processing(cfg, savedir, workdir):

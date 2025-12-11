@@ -850,6 +850,9 @@ class NormLayer(Module):
     elif name == 'layer':
       assert dim != None
       self._layer = nn.LayerNorm(dim)
+    elif name == 'rms':
+      assert dim != None
+      self._layer = RMSNorm(dim)
     else:
       raise NotImplementedError(name)
 
@@ -858,6 +861,16 @@ class NormLayer(Module):
       return features
     return self._layer(features)
 
+class RMSNorm(nn.Module):
+  def __init__(self, dim, eps=1e-6):
+    super().__init__()
+    self.scale = dim ** -0.5
+    self.eps = eps
+    self.g = nn.Parameter(torch.ones(dim))
+
+  def forward(self, x):
+    norm = torch.mean(x ** 2, dim=-1, keepdim=True)
+    return x * torch.rsqrt(norm + self.eps) * self.g
 
 def get_act(name):
   if name == 'none':
@@ -872,15 +885,19 @@ class Optimizer:
 
   def __init__(
       self, name, parameters, lr, eps=1e-4, clip=None, wd=None,
-      opt='adam', wd_pattern=r'.*', use_amp=False):
+      opt='adam', wd_pattern=r'.*', use_amp=False, use_agc=False, agc_clip=0.3, agc_pmin=1e-3):
     assert 0 <= wd < 1
     assert not clip or 1 <= clip
     self._name = name
     self._clip = clip
     self._wd = wd
     self._wd_pattern = wd_pattern
+    self._use_agc = use_agc
+    self._agc_clip = agc_clip
+    self._agc_pmin = agc_pmin
     self._opt = {
         'adam': lambda: torch.optim.Adam(parameters, lr, eps=eps),
+        'adamw': lambda: torch.optim.AdamW(parameters, lr, eps=eps, weight_decay=wd),
         'nadam': lambda: torch.optim.Nadam(parameters, lr, eps=eps),
         'adamax': lambda: torch.optim.Adamax(parameters, lr, eps=eps),
         'sgd': lambda: torch.optim.SGD(parameters, lr),
@@ -908,13 +925,16 @@ class Optimizer:
     self._scaler.unscale_(self._opt)
 
     # Gradient clipping.
-    if self._clip:
+    if self._use_agc:
+      self._apply_agc(params)
+      metrics[f'{self._name}_grad_norm'] = 0.0
+    elif self._clip:
       norm = torch.nn.utils.clip_grad_norm_(params, self._clip)
       metrics[f'{self._name}_grad_norm'] = norm.item()
   
-    # Weight decay.
-    if self._wd:
-      self._apply_weight_decay(params)
+    # # Weight decay.
+    # if self._wd:
+    #   self._apply_weight_decay(params)
     
     # # Apply gradients.
     self._scaler.step(self._opt)
@@ -923,13 +943,30 @@ class Optimizer:
     self._opt.zero_grad() 
     return metrics
 
-  def _apply_weight_decay(self, varibs):
-    nontrivial = (self._wd_pattern != r'.*')
-    if nontrivial:
-      raise NotImplementedError('Non trivial weight decay')
-    else:
-      for var in varibs:
-        var.data = (1 - self._wd) * var.data
+  # def _apply_weight_decay(self, varibs):
+  #   nontrivial = (self._wd_pattern != r'.*')
+  #   if nontrivial:
+  #     raise NotImplementedError('Non trivial weight decay')
+  #   else:
+  #     for var in varibs:
+  #       var.data = (1 - self._wd) * var.data
+    
+  def _apply_agc(self, params):
+    for p in params:
+      if p.grad is None:
+        continue
+
+      p_norm = p.detach().norm(2)
+      g_norm = p.grad.detach().norm(2)
+
+      pmin = torch.tensor(self._agc_pmin, device=p.device)
+      max_norm = torch.maximum(p_norm, pmin) * self._agc_clip
+
+      clip_coef = max_norm / (g_norm + 1e-6)
+
+      clip_coef = torch.clamp(clip_coef, max=1.0)
+
+      p.grad.data.mul_(clip_coef)
 
 class StreamNorm:
 

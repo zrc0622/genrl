@@ -366,7 +366,7 @@ class OneHotAction(gym.Wrapper):
         reference[index] = 1.0
         return reference
 
-class LIBERO:
+class VIDEO:
     def __init__(self, name, seed=0, action_repeat=1, size=(128, 128)):
         self._size = size
         self._action_repeat = action_repeat
@@ -378,6 +378,7 @@ class LIBERO:
             'is_first': gym.spaces.Box(0, 1, (), dtype=bool),
             'is_last': gym.spaces.Box(0, 1, (), dtype=bool),
             'is_terminal': gym.spaces.Box(0, 1, (), dtype=bool),
+            'clip_video': gym.spaces.Box(-np.inf, np.inf, (512,), dtype=np.float32),
         }
 
     @property
@@ -735,7 +736,7 @@ def make(name, obs_type, action_repeat, seed, img_size=64, viclip_encode=False, 
     if domain == 'kitchen':
         env = TimeLimit(KitchenWrapper(task, seed=seed, action_repeat=action_repeat, size=(img_size,img_size)), 280 // action_repeat)
     elif domain in ['libero', 'bridge', 'video']:
-        env = LIBERO(task, seed=seed, action_repeat=action_repeat, size=(img_size,img_size))
+        env = VIDEO(task, seed=seed, action_repeat=action_repeat, size=(img_size,img_size))
     else:
         os.environ['PYOPENGL_PLATFORM'] = 'egl' 
         os.environ['MUJOCO_GL'] = 'egl'
@@ -760,6 +761,6 @@ def make(name, obs_type, action_repeat, seed, img_size=64, viclip_encode=False, 
     if isinstance(env.act_space['action'], gym.spaces.Box):
         env = ClipActionWrapper(env,)
 
-    if viclip_encode:
+    if viclip_encode and domain not in ['video']:
         env = ViClipWrapper(env, hd_rendering=clip_hd_rendering, device=device)
     return env
